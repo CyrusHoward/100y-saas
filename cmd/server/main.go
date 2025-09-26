@@ -2,23 +2,27 @@ package main
 
 import (
     "context"
-    "crypto/hmac"
-    "crypto/sha256"
+    "database/sql"
     "embed"
     "encoding/csv"
     "encoding/json"
-    "errors"
     "fmt"
-    "log"
     "net/http"
     "os"
+    "os/signal"
     "path/filepath"
     "strconv"
     "strings"
+    "syscall"
     "time"
 
-    "database/sql"
     _ "modernc.org/sqlite"
+    
+    "100y-saas/internal/config"
+    "100y-saas/internal/health"
+    httphandlers "100y-saas/internal/http"
+    "100y-saas/internal/jobs"
+    "100y-saas/internal/logger"
 )
 
 //go:embed ../../web/*
@@ -29,22 +33,31 @@ var schemaSQL string
 
 type App struct {
     db     *sql.DB
-    secret []byte // for cookie signing
+    cfg    *config.Config
+    log    *logger.Logger
 }
 
 func main() {
-    dsn := env("DB_PATH", "data/app.db")
-    secret := []byte(env("APP_SECRET", "change-me"))
+    cfg, err := config.Load()
+    if err != nil {
+        panic(err)
+    }
 
+    dsn := cfg.Database.Path
     if err := os.MkdirAll(filepath.Dir(dsn), 0o755); err != nil {
-        log.Fatal(err)
+        panic(err)
     }
 
     db, err := sql.Open("sqlite", dsn+"?_busy_timeout=5000&_fk=1")
-    if err != nil { log.Fatal(err) }
-    if err := migrate(db, schemaSQL); err != nil { log.Fatal(err) }
+    if err != nil { panic(err) }
+    if err := migrate(db, schemaSQL); err != nil { panic(err) }
 
-    app := &App{db: db, secret: secret}
+    // Optional: tune connection pool (SQLite driver may ignore some of these)
+    db.SetMaxOpenConns(cfg.Database.MaxOpenConnections)
+    db.SetMaxIdleConns(cfg.Database.MaxIdleConnections)
+    db.SetConnMaxLifetime(cfg.Database.ConnectionLifetime)
+
+    app := &App{db: db, cfg: cfg, log: logger.New("server")}
 
     mux := http.NewServeMux()
 
@@ -52,25 +65,71 @@ func main() {
     fs := http.FS(webFS)
     mux.Handle("/", withSecurityHeaders(http.FileServer(fs)))
 
+    // Health endpoints
+    hc := health.NewHealthChecker(db)
+    mux.Handle("/healthz", hc)
+    mux.HandleFunc("/live", health.LivenessHandler)
+    mux.HandleFunc("/ready", hc.ReadinessHandler)
+
     // api routes
+    handlers := httphandlers.NewHandlers(db, cfg)
+    withCORS := handlers.CORS
+    withReqID := handlers.RequestID
+
     mux.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request){
         writeJSON(w, map[string]string{"pong":"ok", "time": time.Now().UTC().Format(time.RFC3339)})
     })
 
+    // Auth
+    mux.Handle("/api/auth/register", withCORS(withReqID(http.HandlerFunc(handlers.Register))))
+    mux.Handle("/api/auth/login", withCORS(withReqID(http.HandlerFunc(handlers.Login))))
+    mux.Handle("/api/auth/logout", withCORS(withReqID(http.HandlerFunc(handlers.Logout))))
+
+    // Tenants
+    mux.Handle("/api/tenants", withCORS(withReqID(http.HandlerFunc(handlers.RequireAuth(handlers.GetTenants)))))
+    mux.Handle("/api/tenants/create", withCORS(withReqID(http.HandlerFunc(handlers.RequireAuth(handlers.CreateTenant)))))
+
+    // Analytics
+    mux.Handle("/api/analytics/stats", withCORS(withReqID(http.HandlerFunc(handlers.RequireTenant(handlers.GetAnalytics)))))
+
+    // Export all data
+    mux.Handle("/api/export-all", withCORS(withReqID(http.HandlerFunc(handlers.RequireTenant(handlers.ExportAll)))))
+
+    // Legacy endpoints (for backward compatibility)
     mux.HandleFunc("/api/items", app.itemsHandler)
     mux.HandleFunc("/export", app.exportCSV)
 
+    // Background jobs processor
+    processor := jobs.NewJobProcessor(db)
+    processor.Start()
+
     srv := &http.Server{
-        Addr:         ":8080",
+        Addr:         ":"+strconv.Itoa(cfg.Server.Port),
         Handler:      logRequests(mux),
-        ReadTimeout:  5 * time.Second,
-        WriteTimeout: 10 * time.Second,
-        IdleTimeout:  60 * time.Second,
+        ReadTimeout:  cfg.Server.ReadTimeout,
+        WriteTimeout: cfg.Server.WriteTimeout,
+        IdleTimeout:  cfg.Server.IdleTimeout,
     }
 
-    log.Println("listening on :8080")
-    if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-        log.Fatal(err)
+    // Graceful shutdown
+    go func() {
+        app.log.Info("listening", map[string]interface{}{"addr": srv.Addr})
+        if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+            app.log.Error("server error", map[string]interface{}{"error": err.Error()})
+        }
+    }()
+
+    quit := make(chan os.Signal, 1)
+    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+    <-quit
+
+    ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+    defer cancel()
+
+    processor.Stop()
+
+    if err := srv.Shutdown(ctx); err != nil {
+        app.log.Error("shutdown error", map[string]interface{}{"error": err.Error()})
     }
 }
 
