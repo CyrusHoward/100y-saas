@@ -1,6 +1,8 @@
 module 100y-saas
 
-go 1.22
+go 1.22.5
+
+toolchain go1.22.5
 
 require modernc.org/sqlite v1.29.1
 

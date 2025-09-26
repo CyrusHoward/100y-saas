@@ -1,0 +1,43 @@
+{$DOMAIN:localhost} {
+	encode zstd gzip
+	
+	# Health check endpoint (bypass auth)
+	handle /healthz* {
+		reverse_proxy app:8080
+	}
+	
+	# API and static content
+	handle /* {
+		reverse_proxy app:8080
+	}
+	
+	# Security headers
+	header {
+		# HSTS
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		
+		# Prevent MIME sniffing
+		X-Content-Type-Options nosniff
+		
+		# Prevent clickjacking
+		X-Frame-Options DENY
+		
+		# XSS protection
+		X-XSS-Protection "1; mode=block"
+		
+		# Referrer policy
+		Referrer-Policy "strict-origin-when-cross-origin"
+		
+		# Remove server info
+		-Server
+	}
+	
+	# Rate limiting (basic)
+	rate_limit {
+		zone general {
+			key {remote_host}
+			events 100
+			window 1m
+		}
+	}
+}

@@ -1,10 +1,81 @@
-# 100‑Year SaaS: Minimal, Durable, and Self‑Contained
+# 100‑Year SaaS: Production-Ready Minimalist SaaS Platform
 
-A tiny, boring-on-purpose stack designed to keep running with near‑zero upkeep.
+> A tiny, boring-on-purpose stack designed to keep running for decades with zero maintenance
 
----
+[![CI/CD](https://github.com/dporkka/100y-saas/workflows/CI%2FCD/badge.svg)](https://github.com/dporkka/100y-saas/actions)
+[![Go Report Card](https://goreportcard.com/badge/github.com/dporkka/100y-saas)](https://goreportcard.com/report/github.com/dporkka/100y-saas)
+[![Docker Pulls](https://img.shields.io/docker/pulls/100y-saas)](https://hub.docker.com/r/100y-saas)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## High‑Level Design
+**100‑Year SaaS** is a complete, production-ready multi-tenant SaaS platform built for extreme durability and minimal maintenance. It includes authentication, analytics, subscriptions, background jobs, rate limiting, and email notifications—all using only SQLite and Go's standard library.
+
+## ✨ Features
+
+### 🚀 **Complete SaaS Platform**
+- **Multi-tenant Architecture** - Complete data isolation between organizations
+- **User Authentication** - Registration, login, session management with auto-cleanup
+- **Subscription Management** - Free/paid tiers with automatic usage limit enforcement
+- **Real-time Analytics** - Usage tracking, reporting, dashboard stats
+- **Background Jobs** - SQLite-based job queue with retries and scheduling
+- **Rate Limiting** - In-memory token bucket algorithm with auto-cleanup
+- **Email Notifications** - SMTP-based emails with template system
+- **Health Monitoring** - `/healthz` endpoint for uptime monitoring
+
+### 🏗️ **Zero-Maintenance Design**
+- **Single Binary** - Everything embedded in one executable
+- **Single Database** - All data in one SQLite file
+- **No External Services** - Redis, Postgres, or cloud services required
+- **Self-Healing** - Automatic cleanup, retries, and maintenance
+- **Complete Data Ownership** - No vendor lock-in or data sharing
+
+## 📋 Quick Start
+
+### Option 1: One-Click Install (Linux/macOS)
+```bash
+# Clone and install with automatic Go setup and systemd service
+curl -fsSL https://raw.githubusercontent.com/dporkka/100y-saas/main/install.sh | sudo bash -s -- --domain=yourdomain.com
+```
+
+### Option 2: Docker Compose (Recommended for Development)
+```bash
+git clone https://github.com/dporkka/100y-saas.git
+cd 100y-saas
+
+# Copy and customize environment variables
+cp example.env .env
+# Edit .env with your settings
+
+# Start with Caddy reverse proxy
+docker-compose up -d
+
+# Load demo data (optional)
+./examples/load_demo_data.sh
+```
+
+### Option 3: Build from Source
+```bash
+# Install Go 1.22.5+
+git clone https://github.com/dporkka/100y-saas.git
+cd 100y-saas
+
+# Install dependencies and build
+go mod tidy
+go build -o bin/app ./cmd/server
+
+# Run locally
+DB_PATH=data/app.db APP_SECRET=local-secret ./bin/app
+```
+
+## 🌐 Demo
+
+Try it live at **https://demo.100y-saas.com** (if available)
+
+**Demo Accounts:**
+- `demo@example.com` / `hello` (Acme Corporation - Pro Plan)
+- `admin@example.com` / `admin` (Tech Startup - Starter Plan)
+- `user@example.com` / `secret` (Freelancer - Free Plan)
+
+## High‑Level Architecture
 
 ```
 [Browser]
