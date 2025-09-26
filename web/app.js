@@ -6,7 +6,8 @@ const state = {
   isOnline: navigator.onLine,
   isLoading: false,
   currentTenant: null,
-  user: null
+  user: null,
+  csrfToken: null
 };
 
 // Initialize application
@@ -48,6 +49,7 @@ async function initializeApp() {
   
   // Initialize UI
   setupEventListeners();
+  await fetchCSRFToken();
   loadInitialData();
   updateConnectionStatus();
 }
@@ -85,10 +87,16 @@ async function handleFormSubmit(e) {
   setLoadingState(submitBtn, true);
   
   try {
+    // Ensure we have a fresh CSRF token
+    if (!state.csrfToken) {
+      await fetchCSRFToken();
+    }
+    
     const response = await fetch('/api/items', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': state.csrfToken
       },
       body: JSON.stringify({ title, note })
     });
@@ -112,7 +120,11 @@ async function handleFormSubmit(e) {
   } catch (error) {
     console.error('Failed to add item:', error);
     
-    if (!state.isOnline) {
+    // Handle CSRF token errors
+    if (error.message.includes('CSRF') || error.message.includes('403')) {
+      await fetchCSRFToken();
+      showError('Security token expired. Please try again.');
+    } else if (!state.isOnline) {
       showError('You are offline. Please try again when connected.');
     } else {
       showError(`Failed to add item: ${error.message}`);
@@ -286,6 +298,30 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+// CSRF Token Management
+async function fetchCSRFToken() {
+  try {
+    const response = await fetch('/api/csrf-token');
+    
+    if (response.ok) {
+      const data = await response.json();
+      state.csrfToken = data.data.csrf_token;
+    } else {
+      console.warn('Failed to fetch CSRF token');
+    }
+  } catch (error) {
+    console.warn('CSRF token fetch error:', error);
+  }
+}
+
+// Update CSRF token from response headers
+function updateCSRFTokenFromResponse(response) {
+  const csrfToken = response.headers.get('X-CSRF-Token');
+  if (csrfToken) {
+    state.csrfToken = csrfToken;
+  }
 }
 
 // Initialize on load (fallback for non-modern browsers)

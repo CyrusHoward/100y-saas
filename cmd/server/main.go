@@ -80,20 +80,28 @@ func main() {
         writeJSON(w, map[string]string{"pong":"ok", "time": time.Now().UTC().Format(time.RFC3339)})
     })
 
-    // Auth
-    mux.Handle("/api/auth/register", withCORS(withReqID(http.HandlerFunc(handlers.Register))))
-    mux.Handle("/api/auth/login", withCORS(withReqID(http.HandlerFunc(handlers.Login))))
-    mux.Handle("/api/auth/logout", withCORS(withReqID(http.HandlerFunc(handlers.Logout))))
+    // Auth (with CSRF protection for state-changing operations)
+    mux.Handle("/api/auth/register", withCORS(withReqID(csrfProtection(http.HandlerFunc(handlers.Register)))))
+    mux.Handle("/api/auth/login", withCORS(withReqID(csrfProtection(http.HandlerFunc(handlers.Login)))))
+    mux.Handle("/api/auth/logout", withCORS(withReqID(csrfProtection(http.HandlerFunc(handlers.Logout)))))
 
     // Tenants
     mux.Handle("/api/tenants", withCORS(withReqID(http.HandlerFunc(handlers.RequireAuth(handlers.GetTenants)))))
-    mux.Handle("/api/tenants/create", withCORS(withReqID(http.HandlerFunc(handlers.RequireAuth(handlers.CreateTenant)))))
+    mux.Handle("/api/tenants/create", withCORS(withReqID(csrfProtection(http.HandlerFunc(handlers.RequireAuth(handlers.CreateTenant))))))
 
     // Analytics
     mux.Handle("/api/analytics/stats", withCORS(withReqID(http.HandlerFunc(handlers.RequireTenant(handlers.GetAnalytics)))))
 
     // Export all data
     mux.Handle("/api/export-all", withCORS(withReqID(http.HandlerFunc(handlers.RequireTenant(handlers.ExportAll)))))
+    
+    // CSRF Protection
+    csrfProtection := handlers.CSRFProtectionMiddleware
+    mux.Handle("/api/csrf-token", withCORS(withReqID(http.HandlerFunc(handlers.CSRFTokenHandler))))
+    
+    // API Documentation
+    mux.Handle("/swagger", withCORS(withReqID(http.HandlerFunc(handlers.HandleSwagger))))
+    mux.Handle("/swagger.json", withCORS(withReqID(http.HandlerFunc(handlers.HandleSwaggerJSON))))
 
     // Legacy endpoints (for backward compatibility)
     mux.HandleFunc("/api/items", app.itemsHandler)

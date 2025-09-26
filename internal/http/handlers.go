@@ -3,6 +3,7 @@ package http
 import (
 	"crypto/rand"
 	"database/sql"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -26,6 +27,7 @@ type Handlers struct {
 	saas      *saas.SaaSService
 	analytics *analytics.AnalyticsService
 	rateLimiter *RateLimiter
+	csrf      *CSRFProtection
 }
 
 type Response struct {
@@ -59,6 +61,7 @@ func NewHandlers(db *sql.DB, cfg *config.Config) *Handlers {
 		saas:        saas.NewSaaSService(db),
 		analytics:   analytics.NewAnalyticsService(db),
 		rateLimiter: NewRateLimiter(100, time.Hour), // 100 requests per hour for auth
+		csrf:        NewCSRFProtection(),
 	}
 }
 
@@ -383,7 +386,7 @@ func (h *Handlers) GetAnalytics(w http.ResponseWriter, r *http.Request) {
 	h.writeSuccess(w, stats, "")
 }
 
-// Export Handler
+// Export Handlers
 
 func (h *Handlers) ExportAll(w http.ResponseWriter, r *http.Request) {
 	tenantID, _ := strconv.ParseInt(r.Header.Get("X-Tenant-ID"), 10, 64)
@@ -401,46 +404,316 @@ func (h *Handlers) ExportAll(w http.ResponseWriter, r *http.Request) {
 		format = "json"
 	}
 
-	// Export data (simplified implementation)
-	data := map[string]interface{}{
-		"tenant_id":   tenantID,
-		"exported_at": time.Now(),
-		"format":      format,
+	dataType := r.URL.Query().Get("type")
+	if dataType == "" {
+		dataType = "all"
 	}
 
-	// Get items
-	rows, err := h.db.Query("SELECT id, title, note, created_at FROM items WHERE tenant_id = ?", tenantID)
-	if err == nil {
-		defer rows.Close()
-		var items []map[string]interface{}
-		for rows.Next() {
-			var id int64
-			var title, note string
-			var createdAt time.Time
-			if err := rows.Scan(&id, &title, &note, &createdAt); err == nil {
-				items = append(items, map[string]interface{}{
-					"id":         id,
-					"title":      title,
-					"note":       note,
-					"created_at": createdAt,
-				})
-			}
+	// Validate format
+	if format != "json" && format != "csv" {
+		h.writeError(w, "Format must be 'json' or 'csv'", http.StatusBadRequest)
+		return
+	}
+
+	// Validate type
+	validTypes := []string{"profile", "tenants", "analytics", "items", "all"}
+	valid := false
+	for _, vt := range validTypes {
+		if dataType == vt {
+			valid = true
+			break
 		}
-		data["items"] = items
+	}
+	if !valid {
+		h.writeError(w, "Type must be one of: profile, tenants, analytics, items, all", http.StatusBadRequest)
+		return
+	}
+
+	// Export data based on type and format
+	switch format {
+	case "json":
+		h.exportJSON(w, tenantID, userID, dataType)
+	case "csv":
+		h.exportCSV(w, tenantID, userID, dataType)
 	}
 
 	// Track export event
 	h.analytics.TrackEvent(tenantID, userID, "data_exported", map[string]interface{}{
-		"format":     format,
-		"item_count": len(data["items"].([]map[string]interface{})),
+		"format": format,
+		"type":   dataType,
 	})
+}
 
-	if format == "json" {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=tenant_%d_export.json", tenantID))
-		json.NewEncoder(w).Encode(data)
-	} else {
-		h.writeError(w, "Only JSON format supported currently", http.StatusBadRequest)
+func (h *Handlers) exportJSON(w http.ResponseWriter, tenantID, userID int64, dataType string) {
+	data := map[string]interface{}{
+		"tenant_id":   tenantID,
+		"exported_at": time.Now(),
+		"format":      "json",
+		"type":        dataType,
+	}
+
+	// Export based on type
+	switch dataType {
+	case "profile":
+		profile, err := h.getUserProfile(userID)
+		if err == nil {
+			data["profile"] = profile
+		}
+	
+	case "tenants":
+		tenants, err := h.getUserTenants(userID)
+		if err == nil {
+			data["tenants"] = tenants
+		}
+	
+	case "analytics":
+		analytics, err := h.getAnalyticsData(tenantID)
+		if err == nil {
+			data["analytics"] = analytics
+		}
+	
+	case "items":
+		items, err := h.getItems(tenantID)
+		if err == nil {
+			data["items"] = items
+		}
+	
+	case "all":
+		// Export all data types
+		if profile, err := h.getUserProfile(userID); err == nil {
+			data["profile"] = profile
+		}
+		if tenants, err := h.getUserTenants(userID); err == nil {
+			data["tenants"] = tenants
+		}
+		if analytics, err := h.getAnalyticsData(tenantID); err == nil {
+			data["analytics"] = analytics
+		}
+		if items, err := h.getItems(tenantID); err == nil {
+			data["items"] = items
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=tenant_%d_%s_export.json", tenantID, dataType))
+	json.NewEncoder(w).Encode(data)
+}
+
+func (h *Handlers) exportCSV(w http.ResponseWriter, tenantID, userID int64, dataType string) {
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=tenant_%d_%s_export.csv", tenantID, dataType))
+
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+
+	switch dataType {
+	case "profile":
+		h.exportProfileCSV(cw, userID)
+	case "tenants":
+		h.exportTenantsCSV(cw, userID)
+	case "analytics":
+		h.exportAnalyticsCSV(cw, tenantID)
+	case "items":
+		h.exportItemsCSV(cw, tenantID)
+	case "all":
+		// Export all data types in separate sections
+		cw.Write([]string{"=== USER PROFILE ==="})
+		h.exportProfileCSV(cw, userID)
+		cw.Write([]string{""}) // Empty row
+		cw.Write([]string{"=== TENANTS ==="})
+		h.exportTenantsCSV(cw, userID)
+		cw.Write([]string{""}) // Empty row
+		cw.Write([]string{"=== ANALYTICS ==="})
+		h.exportAnalyticsCSV(cw, tenantID)
+		cw.Write([]string{""}) // Empty row
+		cw.Write([]string{"=== ITEMS ==="})
+		h.exportItemsCSV(cw, tenantID)
+	}
+}
+
+// Helper functions for data retrieval
+
+func (h *Handlers) getUserProfile(userID int64) (map[string]interface{}, error) {
+	var email, name string
+	var createdAt time.Time
+	err := h.db.QueryRow("SELECT email, COALESCE(name, ''), created_at FROM users WHERE id = ?", userID).Scan(&email, &name, &createdAt)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"id":         userID,
+		"email":      email,
+		"name":       name,
+		"created_at": createdAt,
+	}, nil
+}
+
+func (h *Handlers) getUserTenants(userID int64) ([]map[string]interface{}, error) {
+	rows, err := h.db.Query(`
+		SELECT t.id, t.name, t.plan, t.created_at, tu.role
+		FROM tenants t
+		JOIN tenant_users tu ON t.id = tu.tenant_id
+		WHERE tu.user_id = ?
+		ORDER BY t.created_at
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tenants []map[string]interface{}
+	for rows.Next() {
+		var id int64
+		var name, plan, role string
+		var createdAt time.Time
+		if err := rows.Scan(&id, &name, &plan, &createdAt, &role); err == nil {
+			tenants = append(tenants, map[string]interface{}{
+				"id":         id,
+				"name":       name,
+				"plan":       plan,
+				"role":       role,
+				"created_at": createdAt,
+			})
+		}
+	}
+	return tenants, nil
+}
+
+func (h *Handlers) getAnalyticsData(tenantID int64) (map[string]interface{}, error) {
+	// Get event counts by type
+	rows, err := h.db.Query(`
+		SELECT event_type, COUNT(*) as count
+		FROM analytics_events
+		WHERE tenant_id = ? AND created_at > datetime('now', '-30 days')
+		GROUP BY event_type
+		ORDER BY count DESC
+	`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []map[string]interface{}
+	totalEvents := 0
+	for rows.Next() {
+		var eventType string
+		var count int
+		if err := rows.Scan(&eventType, &count); err == nil {
+			events = append(events, map[string]interface{}{
+				"event_type": eventType,
+				"count":      count,
+			})
+			totalEvents += count
+		}
+	}
+
+	// Get unique users count
+	var uniqueUsers int
+	h.db.QueryRow("SELECT COUNT(DISTINCT user_id) FROM analytics_events WHERE tenant_id = ? AND created_at > datetime('now', '-30 days')", tenantID).Scan(&uniqueUsers)
+
+	return map[string]interface{}{
+		"period":        "30_days",
+		"total_events":  totalEvents,
+		"unique_users":  uniqueUsers,
+		"event_breakdown": events,
+	}, nil
+}
+
+func (h *Handlers) getItems(tenantID int64) ([]map[string]interface{}, error) {
+	rows, err := h.db.Query("SELECT id, title, note, created_at FROM items WHERE tenant_id = ? ORDER BY created_at DESC", tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []map[string]interface{}
+	for rows.Next() {
+		var id int64
+		var title, note string
+		var createdAt time.Time
+		if err := rows.Scan(&id, &title, &note, &createdAt); err == nil {
+			items = append(items, map[string]interface{}{
+				"id":         id,
+				"title":      title,
+				"note":       note,
+				"created_at": createdAt,
+			})
+		}
+	}
+	return items, nil
+}
+
+// CSV export helper functions
+
+func (h *Handlers) exportProfileCSV(cw *csv.Writer, userID int64) {
+	profile, err := h.getUserProfile(userID)
+	if err != nil {
+		return
+	}
+
+	cw.Write([]string{"Field", "Value"})
+	cw.Write([]string{"ID", fmt.Sprintf("%d", userID)})
+	cw.Write([]string{"Email", profile["email"].(string)})
+	cw.Write([]string{"Name", profile["name"].(string)})
+	cw.Write([]string{"Created At", profile["created_at"].(time.Time).Format(time.RFC3339)})
+}
+
+func (h *Handlers) exportTenantsCSV(cw *csv.Writer, userID int64) {
+	tenants, err := h.getUserTenants(userID)
+	if err != nil {
+		return
+	}
+
+	cw.Write([]string{"ID", "Name", "Plan", "Role", "Created At"})
+	for _, tenant := range tenants {
+		cw.Write([]string{
+			fmt.Sprintf("%d", int64(tenant["id"].(int64))),
+			tenant["name"].(string),
+			tenant["plan"].(string),
+			tenant["role"].(string),
+			tenant["created_at"].(time.Time).Format(time.RFC3339),
+		})
+	}
+}
+
+func (h *Handlers) exportAnalyticsCSV(cw *csv.Writer, tenantID int64) {
+	analytics, err := h.getAnalyticsData(tenantID)
+	if err != nil {
+		return
+	}
+
+	cw.Write([]string{"Metric", "Value"})
+	cw.Write([]string{"Period", analytics["period"].(string)})
+	cw.Write([]string{"Total Events", fmt.Sprintf("%d", analytics["total_events"].(int))})
+	cw.Write([]string{"Unique Users", fmt.Sprintf("%d", analytics["unique_users"].(int))})
+	cw.Write([]string{""}) // Empty row
+	cw.Write([]string{"Event Type", "Count"})
+	
+	if events, ok := analytics["event_breakdown"].([]map[string]interface{}); ok {
+		for _, event := range events {
+			cw.Write([]string{
+				event["event_type"].(string),
+				fmt.Sprintf("%d", event["count"].(int)),
+			})
+		}
+	}
+}
+
+func (h *Handlers) exportItemsCSV(cw *csv.Writer, tenantID int64) {
+	items, err := h.getItems(tenantID)
+	if err != nil {
+		return
+	}
+
+	cw.Write([]string{"ID", "Title", "Note", "Created At"})
+	for _, item := range items {
+		cw.Write([]string{
+			fmt.Sprintf("%d", int64(item["id"].(int64))),
+			item["title"].(string),
+			item["note"].(string),
+			item["created_at"].(time.Time).Format(time.RFC3339),
+		})
 	}
 }
 
