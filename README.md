@@ -1,2 +1,2 @@
-# 100y-saas
-SaaS template designed to last 100 years with minimal mainenance
+# 100-Year SaaS
+Minimal Go + SQLite stack designed to run for decades with near-zero upkeep.
