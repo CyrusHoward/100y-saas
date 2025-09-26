@@ -6,7 +6,7 @@ This file provides guidance to WARP (warp.dev) when working with code in this re
 
 100-Year SaaS is a minimalist, boring-on-purpose Go application designed for extreme durability and simplicity. The project follows the principles of protocols over frameworks, using HTTP, HTML, and SQL with a single-binary approach that can run for decades with minimal maintenance.
 
-**Status**: This is a complete, working project template. All source code files are present and the application can be built and run immediately (requires Go to be installed).
+**Status**: This is a complete, production-ready SaaS platform with authentication, multi-tenancy, analytics, subscriptions, background jobs, rate limiting, and email notifications. All features are maintenance-free and use only SQLite + standard library.
 
 ## Getting Started
 
@@ -28,10 +28,18 @@ This is a full-stack web application with a simple 3-tier architecture:
 
 **Key Components:**
 - **Go Server** (`cmd/server/main.go`): Single binary HTTP server with embedded static files and database migrations
-- **SQLite Database** (`internal/db/schema.sql`): Single-file ACID database with idempotent migrations
+- **SQLite Database** (`internal/db/schema.sql`): Single-file ACID database with idempotent migrations, includes all SaaS tables
 - **Static Frontend** (`web/`): Vanilla HTML/CSS/JS with no build tools or frameworks
 - **Caddy Proxy** (`Caddyfile`): Auto-HTTPS reverse proxy for production deployment
 - **Docker Support**: Multi-stage Dockerfile using distroless base for minimal attack surface
+
+**SaaS Features (Zero Maintenance):**
+- **Authentication** (`internal/auth/`): User registration, login, session management with auto-cleanup
+- **Multi-tenancy** (`internal/saas/`): Complete tenant isolation, subscription limits, role-based access
+- **Analytics** (`internal/analytics/`): Usage tracking, reporting, real-time stats with automatic data rotation
+- **Background Jobs** (`internal/jobs/`): SQLite-based job queue with retries and scheduled tasks
+- **Rate Limiting** (`internal/http/`): In-memory token bucket algorithm with auto-cleanup
+- **Email Service** (`internal/email/`): SMTP-based notifications with template system
 
 ## Essential Commands
 
@@ -145,3 +153,43 @@ DB_PATH=data/app.db BACKUP_DIR=backups ./backup.sh
 - Schedule via cron: `15 2 * * * /path/to/backup.sh`
 - Store backups in separate location from primary database
 - SQLite supports online backups without stopping the application
+
+## SaaS Features (Maintenance-Free)
+
+### Authentication & Multi-tenancy
+- **User Management**: Registration, login, session-based authentication
+- **Tenant Isolation**: Complete data separation between organizations
+- **Subscription Limits**: Automatic enforcement of item/user limits per plan
+- **Role-based Access**: Owner/member roles within tenants
+
+### Analytics & Usage Tracking
+- **Event Tracking**: All user actions automatically tracked
+- **Usage Reports**: Daily/monthly summaries, top users, event timelines
+- **Real-time Dashboard**: Live stats without external services
+- **Data Retention**: Automatic cleanup after 90 days
+
+### Background Job System
+- **SQLite-based Queue**: No Redis or external queue required
+- **Automatic Retries**: Exponential backoff for failed jobs
+- **Built-in Tasks**: Session cleanup, analytics rotation, email sending
+- **Custom Jobs**: Easy to add new background processing
+
+### Rate Limiting & Security
+- **In-memory Limiting**: Token bucket algorithm with auto-cleanup
+- **Flexible Keys**: IP, user, or tenant-based rate limiting
+- **No External Store**: Uses application memory, scales with instances
+
+### Email Notifications
+- **Standard SMTP**: Uses Go's built-in email capabilities
+- **Template System**: Welcome emails, password resets, limit warnings
+- **Development Mode**: Logs instead of sending during development
+- **Zero Dependencies**: No external email services required
+
+### Key Benefits
+- **Zero Maintenance**: All features self-manage and auto-cleanup
+- **Single Database**: Everything stored in one SQLite file
+- **No External Services**: Completely self-contained
+- **Complete Data Ownership**: No vendor lock-in or data sharing
+- **Predictable Costs**: No per-request or usage-based pricing
+
+> 📖 **See [SAAS_FEATURES_GUIDE.md](SAAS_FEATURES_GUIDE.md) for detailed implementation guide and examples**
